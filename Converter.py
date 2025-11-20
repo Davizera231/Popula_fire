@@ -9,6 +9,6 @@ def LerCsv():
 
     print(f"{(Document.to_string())} Registros encontrados no arquivo Excel.")
 
+    return Document
 
-if __name__ == "__main__":
-    LerCsv()
+
