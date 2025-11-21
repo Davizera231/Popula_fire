@@ -27,7 +27,7 @@ def carregar_dados_firebase():
             doc_ref.set(dados_dict)
             print(f"Documento com CNPJ {cnpj} adicionado ao Firebase.")
         else:
-            print(f"Documento com CNPJ {cnpj} já existe no Firebase. Ignorando...")
+            print(f"Documento com CNPJ {cnpj} já existe no Firebase. Ignoranado...")
 
 
 if __name__ == "__main__":
