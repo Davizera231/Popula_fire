@@ -1,9 +1,8 @@
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.common.by import By
-from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support.ui import WebDriverWait, Select
 from selenium.webdriver.support import expected_conditions as EC
-from selenium.webdriver.support.ui import Select
 from selenium.common.exceptions import StaleElementReferenceException, TimeoutException, ElementClickInterceptedException, NoSuchElementException
 from selenium.webdriver.common.action_chains import ActionChains
 from webdriver_manager.chrome import ChromeDriverManager
@@ -12,23 +11,60 @@ import os
 import sys
 
 
+URL = "https://infoms.saude.gov.br/extensions/SEIDIGI_DEMAS_PFPB_ENDERECOS/index.html#"
+DOWNLOAD_DIR = os.path.join(os.getcwd(), "farmacia_popular_downloads")
+FILTER_STEPS = [
+
+    ("filtro_02", "SP", "UF"),
+    ("filtro_03", "Mogi das Cruzes/SP", "Município")
+]
+
+
+
+def setup_driver():
+    """Configura e retorna o driver do Chrome com opções de download."""
+    if not os.path.isdir(DOWNLOAD_DIR):
+        os.makedirs(DOWNLOAD_DIR)
+
+    chrome_options = Options()
+    prefs = {
+        "download.default_directory": DOWNLOAD_DIR,
+        "download.prompt_for_download": False,
+        "download.directory_upgrade": True,
+        "safebrowsing.enabled": True 
+    }
+    chrome_options.add_experimental_option("prefs", prefs)
+    
+    service = webdriver.ChromeService(ChromeDriverManager().install())
+    driver = webdriver.Chrome(service=service, options=chrome_options)
+    driver.set_window_size(1400, 1000) # Otimização para Anti-Interceptação
+    return driver
+
+
+def wait_for_ready(driver, wait):
+    """Espera o carregamento inicial da página e a estabilização do Qlik/Overlays."""
+    print("-> Aguardando carregamento inicial e estabilização do Qlik...")
+    wait.until(EC.presence_of_element_located((By.ID, "filterBar")))
+    
+
+    for selector in ["body_load", ".qv-throbber"]:
+        try:
+            wait.until(EC.invisibility_of_element_located((By.CSS_SELECTOR, selector)))
+        except Exception:
+            pass
+    time.sleep(2) 
+
 
 def select_filter_with_retry(driver, wait, container_id, target_text, timeout=15):
-    """
-    Tenta selecionar um valor em um dropdown, repetindo a tentativa 
-    em caso de StaleElementReferenceException.
-    """
+    """(Mantido como está para evitar a StaleElementReferenceException)"""
     xpath_selector = f"//div[@id='{container_id}']//select"
     start_time = time.time()
     
     while time.time() - start_time < timeout:
         try:
-            # 1. Espera que o elemento <select> esteja visível e clicável (Nova Referência)
             select_element = wait.until(
                 EC.element_to_be_clickable((By.XPATH, xpath_selector))
             )
-            
-            # 2. Tenta interagir (Seleção)
             select_obj = Select(select_element)
             select_obj.select_by_visible_text(target_text) 
             
@@ -51,149 +87,97 @@ def select_filter_with_retry(driver, wait, container_id, target_text, timeout=15
     return False 
 
 
-def wait_for_qlik_overlay_to_disappear(driver, wait):
-    """
-    Espera explicitamente que o elemento de carregamento 'body_load' e o throbber do Qlik desapareçam.
-    """
-    print("   -> Verificando overlays de carregamento...")
-    
-    # 1. Espera pelo overlay principal ('body_load')
-    try:
-        wait.until(EC.invisibility_of_element_located((By.ID, "body_load")))
-        print("   -> Overlay 'body_load' desapareceu.")
-    except Exception:
-        pass
-    
-    # 2. Espera pelo throbber (sinal de carregamento do Qlik)
-    THROBBER_SELECTOR = ".qv-throbber"
-    try:
-        wait.until(EC.invisibility_of_element_located((By.CSS_SELECTOR, THROBBER_SELECTOR)))
-        print("   -> Throbber (carregamento Qlik) desapareceu.")
-    except Exception:
-        pass
+def apply_filters(driver, wait):
+    """Aplica todos os filtros definidos na lista FILTER_STEPS."""
+    for container_id, value, name in FILTER_STEPS:
+        print(f"-> Tentando selecionar filtro: {name} ({container_id})...")
+        if not select_filter_with_retry(driver, wait, container_id, value, timeout=20):
+            return False
         
-    time.sleep(1) # Pequena pausa extra para estabilização da DOM
-
-
-# --- Fluxo Principal (main) ---
-def run_automation():
-    # --- Configurações Principais ---
-    URL = "https://infoms.saude.gov.br/extensions/SEIDIGI_DEMAS_PFPB_ENDERECOS/index.html#"
-    download_dir = os.path.join(os.getcwd(), "farmacia_popular_downloads")
     
-    if not os.path.isdir(download_dir):
-        os.makedirs(download_dir)
+        wait_for_ready(driver, wait)
+        time.sleep(1) 
+    
+    return True
 
-    print(f"O arquivo será salvo em: {download_dir}")
 
-    # Configurar o Chrome Options
-    chrome_options = Options()
-    prefs = {
-        "download.default_directory": download_dir,
-        "download.prompt_for_download": False,
-        "download.directory_upgrade": True,
-        "safebrowsing.enabled": True 
-    }
-    chrome_options.add_experimental_option("prefs", prefs)
+def click_download_button(driver, wait):
+    """Localiza o botão, garante que ele esteja visível e clica usando ActionChains com fallback JS."""
+    download_button_id = "exportar_dados_tabela_01"
+    
+    
+    download_button = wait.until(
+        EC.presence_of_element_located((By.ID, download_button_id))
+    )
+    
+    
+    driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", download_button)
+    time.sleep(1) 
+    
+    
+    try:
+        ActionChains(driver).move_to_element(download_button).click().perform()
+        print("-> Download acionado via ActionChains.")
+    except ElementClickInterceptedException:
+    
+        driver.execute_script("arguments[0].click();", download_button)
+        print("-> Download acionado via JavaScript (Fallback).")
+    except Exception as e:
+        print(f"-> Erro fatal ao tentar clicar no botão de download: {e.__class__.__name__}")
+        return False
+        
+    return True
 
+
+def monitor_download():
+    """Monitora o diretório de download até que o arquivo .crdownload desapareça."""
+    time.sleep(5) 
+    timeout_seconds = 60
+    start_time = time.time()
+    
+    while time.time() - start_time < timeout_seconds:
+        if not any(f.endswith(".crdownload") for f in os.listdir(DOWNLOAD_DIR)):
+            return True
+        time.sleep(2)
+            
+    return False
+
+
+def run_automation():
+    print(f"Iniciando automação. O arquivo será salvo em: {DOWNLOAD_DIR}")
     driver = None
     try:
-        service = webdriver.ChromeService(ChromeDriverManager().install())
-        driver = webdriver.Chrome(service=service, options=chrome_options)
-        # Otimização: Define um tamanho de janela maior para evitar elementos bloqueadores em telas pequenas
-        driver.set_window_size(1400, 1000) 
+        driver = setup_driver()
         driver.get(URL)
-
         wait = WebDriverWait(driver, 45) 
         
-        # Espera que a barra de filtros esteja presente
-        wait.until(EC.presence_of_element_located((By.ID, "filterBar")))
         
-        # Espera inicial por overlays e throbber
-        wait_for_qlik_overlay_to_disappear(driver, wait)
+        wait_for_ready(driver, wait)
 
-        # ------------------------------------------------------------------
-        # --- 1. Filtrar UF (filtro_02) ---
-        # ------------------------------------------------------------------
-        print("Tentando selecionar o filtro UF...")
-        if not select_filter_with_retry(driver, wait, "filtro_02", "SP", timeout=20):
-            print("Falha ao aplicar o filtro UF. Encerrando o script.")
+        
+        if not apply_filters(driver, wait):
+            print("-> Automação interrompida devido a falha na aplicação de filtros.")
             return
 
-        # ------------------------------------------------------------------
-        # --- 2. Filtrar Município (filtro_03) ---
-        # ------------------------------------------------------------------
-        # A seleção do UF inicia um carregamento que pode tornar o próximo elemento stale.
-        print("Filtro UF aplicado. Aguardando estabilização para o Município...")
-        wait_for_qlik_overlay_to_disappear(driver, wait)
-
-        print("Tentando selecionar o filtro Município...")
-        if not select_filter_with_retry(driver, wait, "filtro_03", "Mogi das Cruzes/SP", timeout=20):
-            print("Falha ao aplicar o filtro Município. Encerrando o script.")
+        
+        wait_for_ready(driver, wait) 
+        if not click_download_button(driver, wait):
+            print("-> Automação interrompida devido a falha no clique de download.")
             return
-
-        print("Filtros aplicados. Aguardando atualização final da tabela...")
-        wait_for_qlik_overlay_to_disappear(driver, wait)
-        time.sleep(3) 
         
-        # ------------------------------------------------------------------
-        # --- 3. Clicar no Botão de Download (Anti-Interceptação) ---
-        # ------------------------------------------------------------------
         
-        print("Aguardando o botão de download...")
-        download_button = wait.until(
-            EC.presence_of_element_located((By.ID, "exportar_dados_tabela_01"))
-        )
-        
-        # Mover o elemento para a vista (scrollIntoView) para garantir que não haja interceptação de rodapé
-        print("   -> Rolando a visualização para o botão...")
-        driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", download_button)
-        time.sleep(1) # Pequena pausa para a rolagem terminar
-        
-        # Tentativa de clique com ActionChains (mais preciso)
-        try:
-            ActionChains(driver).move_to_element(download_button).click().perform()
-            print("Download acionado via ActionChains.")
-        except ElementClickInterceptedException:
-            # Tentativa de clique com JavaScript (ignora o elemento interceptor)
-            print("   -> Elemento interceptado. Tentando forçar o clique com JavaScript...")
-            driver.execute_script("arguments[0].click();", download_button)
-            print("Download acionado via JavaScript.")
-        except Exception as e:
-             print(f"   -> Erro fatal ao tentar clicar no botão de download: {e}")
-             return
-
-
-        # --- 4. Esperar o Download Terminar ---
-        
-        time.sleep(5) 
-        
-        timeout_seconds = 60
-        start_time = time.time()
-        download_finished = False
-        
-        print("Iniciando verificação de download (máx 60s)...")
-        while time.time() - start_time < timeout_seconds:
-            # Verifica a ausência do arquivo temporário do Chrome (.crdownload)
-            if not any(f.endswith(".crdownload") for f in os.listdir(download_dir)):
-                download_finished = True
-                break
-            time.sleep(2)
-                
-        if download_finished:
-            print(f"Download concluído com sucesso no diretório: {download_dir}")
+        if monitor_download():
+            print("-> Download concluído com sucesso.")
         else:
-            print("Aviso: O download excedeu o tempo limite ou o arquivo temporário não desapareceu.")
-        
-        print("Automação concluída com sucesso.")
+            print("-> Aviso: Download excedeu o tempo limite de monitoramento.")
 
     except Exception as e:
-        print(f"\nOcorreu um erro crítico durante a automação: {e.__class__.__name__}: {e}")
+        print(f"\n-> Ocorreu um erro crítico durante a automação: {e.__class__.__name__}: {e}")
         
     finally:
         if driver:
             driver.quit()
-        
+        print("Automação finalizada.")
+
 if __name__ == "__main__":
     run_automation()
-    print("Programa finalizado.")
